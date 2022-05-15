@@ -1,0 +1,5 @@
+project: espruino
+target: espruino
+
+cmds:
+  - cmd: /espruino @@
