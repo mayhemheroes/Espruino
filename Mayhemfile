@@ -1,6 +1,6 @@
-project: rnshah9/mayhem-espruino
+project: espruino
 target: espruino
 
 cmds:
-  - cmd: /repo/espruino @@
+  - cmd: /repo/espruino /test.js
     filepath: /test.js
