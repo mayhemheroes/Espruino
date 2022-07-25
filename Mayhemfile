@@ -2,5 +2,4 @@ project: espruino
 target: espruino
 
 cmds:
-  - cmd: /repo/espruino /test.js
-    filepath: /test.js
+  - cmd: /espruino @@
