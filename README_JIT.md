@@ -10,8 +10,11 @@ Works:
 * Assignments
 * Maths operators, postfix operators
 * Function calls
+* Member access (with `.` or `[]`)
 * `for (;;)` loops
 * `if ()`
+* `i++` / `++i`
+* `~i`/`!i`/`+i`/`-i`
 * On the whole functions that can't be JITed will produce a message on the console and will be treated as normal functions.
 
 Doesn't work:
@@ -19,18 +22,23 @@ Doesn't work:
 * Everything else
 * Function arguments
 * `var/const/let`
-* Member access (with `.` or `[]`)
 
 Performance:
 
-* Right now, variable accesses search for the variable each time - so this is pretty slow. Maybe they could all be referenced at the start just once?
+* Right now, variable accesses search for the variable each time - so this is pretty slow. 
+  * Maybe they could all be referenced at the start just once and stored on the stack? This could be an easy shortcut to get fast local vars too.
+  * If we did this we'd need to do a first pass, but the first pass *could* be used as quick way to see if the code was JITable
+  * We can't allocate them as we go because we have flow control though.
+  * We also have to worry about unlocking them all on exit if we reference them at the start
+  * We could also extend it to allow caching of constant field access, for instance 'console.log'
 * Built-in functions could be called directly, which would be a TON faster
 * Peephole optimisation could still be added (eg. removing `push r0, pop r0`) but this is the least of our worries
 * Stuff is in place to allow ints to be stored on the stack and converted when needed. This could maybe allow us to keep some vars as ints.
+* When a function is called we load up the address as a 32 bit literal each time. We could maybe have a constant pool?
+* When we emit code, we just use StringAppend which can be very slow. We should use an iterator (it's an easy win for compile performance)
 
 Big stuff to do:
 
-* There seems to be a 'lock leak' - maybe on assignments
 * When calling a JIT function, using existing FunctionCall code to set up args and an execution scope (so args can be passed in)
 
 
@@ -109,6 +117,17 @@ function jit() {'jit';print(42);}
 function jit() {'jit';print(42);return 123;}
 jit()==123
 
+function jit() {'jit';return !123;}
+jit()==false
+function jit() {'jit';return !0;}
+jit()==true
+function jit() {'jit';return ~0;}
+jit()==-1
+function jit() {'jit';return -(1);}
+jit()==-1
+function jit() {'jit';return +"0123";} 
+jit()==83 // octal!
+
 function t() { return "Hello"; }
 function jit() {'jit'; return t()+" world";}
 jit()=="Hello world"
@@ -117,11 +136,17 @@ function jit() {'jit';digitalWrite(LED1,1);}
 jit(); // LED on
 
 
+function jit() {'jit';return i++;}
+i=0;jit()==0 && i==1
+
+function jit() {'jit';return ++i;}
+i=0;jit()==1 && i==1
+
 function jit() {'jit';i=42;}
 jit();i==42
 
 function jit() {'jit';return 1<2;}
-jit();i==true
+jit()==true
 
 function jit() {"jit";if (i<3) print("T"); else print("X");print("--")}
 i=2;jit(); // prints T,--
@@ -131,10 +156,26 @@ i=5;jit(); // prints X,--
 function jit() {"jit";for (i=0;i<5;i=i+1) print(i);}
 jit(); // prints 0,1,2,3,4
 
+function jit() {"jit";for (i=0;i<5;i++) print(i);} // BROKEN?  Uncaught ReferenceError: "" is not defined
+jit(); // prints 0,1,2,3,4
+
+function jit() {"jit";for (i=0;i<5;++i) print(i);}
+jit(); // prints 0,1,2,3,4
+
+
 function nojit() {for (i=0;i<1000;i=i+1);}
 function jit() {"jit";for (i=0;i<1000;i=i+1);}
 t=getTime();jit();getTime()-t // 0.14 sec
 t=getTime();nojit();getTime()-t // 0.28 sec
+
+
+a = {b:42,c:function(){print("hello",this)}};
+function jit() {"jit";return a.b;}
+jit()==42
+function jit() {"jit";return a["b"];}
+jit()==42
+function jit() {"jit";a.c();}
+jit(); // prints 'hello {b:42,...}'
 ```
 
 Run JIT on ARM and then disassemble:

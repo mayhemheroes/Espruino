@@ -37,8 +37,6 @@
 #define CHAR_DELETE_SEND '\b'
 #endif
 
-#define CTRL_C_TIME_FOR_BREAK jshGetTimeFromMilliseconds(100)
-
 #ifdef ESP8266
 extern void jshPrintBanner(void); // prints a debugging banner while we're in beta
 extern void jshSoftInit(void);    // re-inits wifi after a soft-reset
@@ -69,7 +67,9 @@ Pin pinSleepIndicator = DEFAULT_SLEEP_PIN_INDICATOR;
 #endif
 JsiStatus jsiStatus = 0;
 JsSysTime jsiLastIdleTime;  ///< The last time we went around the idle loop - use this for timers
-uint32_t jsiTimeSinceCtrlC;
+#ifndef EMBEDDED
+uint32_t jsiTimeSinceCtrlC; ///< When was Ctrl-C last pressed. We use this so we quit on desktop when we do Ctrl-C + Ctrl-C
+#endif
 // ----------------------------------------------------------------------------
 JsVar *inputLine = 0; ///< The current input line
 JsvStringIterator inputLineIterator; ///< Iterator that points to the end of the input line
@@ -459,7 +459,9 @@ void jsiSoftInit(bool hasBeenReset) {
   // Make sure we set up lastIdleTime, as this could be used
   // when adding an interval from onInit (called below)
   jsiLastIdleTime = jshGetSystemTime();
+#ifndef EMBEDDED
   jsiTimeSinceCtrlC = 0xFFFFFFFF;
+#endif
 
   // Set up interpreter flags and remove
   JsVar *flags = jsvObjectGetChild(execInfo.hiddenRoot, JSI_JSFLAGS_NAME, 0);
@@ -796,7 +798,7 @@ void jsiSemiInit(bool autoLoad, JsfFileName *loadedFilename) {
 #ifdef BANGLEJS
     jsiConsolePrintf("Checking storage...\n");
 #endif
-    if (!jsfIsStorageValid(JSFSTT_NORMAL)) {
+    if (!jsfIsStorageValid(JSFSTT_NORMAL | JSFSTT_FIND_FILENAME_TABLE)) {
       jsiConsolePrintf("Storage is corrupt.\n");
       jsfResetStorage();
     } else {
@@ -1386,7 +1388,7 @@ void jsiTabComplete() {
   // Now try and autocomplete
   data.possible = 0;
   data.matches = 0;
-  jswrap_object_keys_or_property_names_cb(object, true, true, jsiTabComplete_findCommon, &data);
+  jswrap_object_keys_or_property_names_cb(object, JSWOKPF_INCLUDE_NON_ENUMERABLE|JSWOKPF_INCLUDE_PROTOTYPE, jsiTabComplete_findCommon, &data);
   // If we've got >1 match and are at the end of a line, print hints
   if (data.matches>1) {
     // Remove the current line and add a newline
@@ -1395,7 +1397,7 @@ void jsiTabComplete() {
     jsiConsolePrint("\n\n");
     data.lineLength = 0;
     // Output hints
-    jswrap_object_keys_or_property_names_cb(object, true, true, jsiTabComplete_printCommon, &data);
+    jswrap_object_keys_or_property_names_cb(object, JSWOKPF_INCLUDE_NON_ENUMERABLE|JSWOKPF_INCLUDE_PROTOTYPE, jsiTabComplete_printCommon, &data);
     if (data.lineLength) jsiConsolePrint("\n");
     jsiConsolePrint("\n");
     // Return the input line
@@ -1701,7 +1703,7 @@ void jsiExecuteEvents() {
   }
   if (hasEvents) {
     jsiSetBusy(BUSY_INTERACTIVE, false);
-    if (jspIsInterrupted() || jsiTimeSinceCtrlC<CTRL_C_TIME_FOR_BREAK)
+    if (jspIsInterrupted())
       interruptedDuringEvent = true;
   }
 }
@@ -1746,7 +1748,7 @@ NO_INLINE bool jsiExecuteEventCallback(JsVar *thisVar, JsVar *callbackVar, unsig
       jsError("Unknown type of callback in Event Queue");
     jsvUnLock(callbackNoNames);
   }
-  if (!ok || jspIsInterrupted() || jsiTimeSinceCtrlC<CTRL_C_TIME_FOR_BREAK) {
+  if (!ok || jspIsInterrupted()) {
     interruptedDuringEvent = true;
     return false;
   }
@@ -2070,11 +2072,13 @@ void jsiIdle() {
   JsSysTime time = jshGetSystemTime();
   JsSysTime timePassed = time - jsiLastIdleTime;
   jsiLastIdleTime = time;
+#ifndef EMBEDDED
   // add time to Ctrl-C counter, checking for overflow
   uint32_t oldTimeSinceCtrlC = jsiTimeSinceCtrlC;
   jsiTimeSinceCtrlC += (uint32_t)timePassed;
   if (oldTimeSinceCtrlC > jsiTimeSinceCtrlC)
     jsiTimeSinceCtrlC = 0xFFFFFFFF;
+#endif
 
   JsVar *timerArrayPtr = jsvLock(timerArray);
   JsvObjectIterator it;
@@ -2327,8 +2331,8 @@ bool jsiLoop() {
         jsiConsoleRemoveInputLine();
         jsiConsolePrintf("Press Ctrl-C again to exit\n");
       }
-#endif
       jsiTimeSinceCtrlC = 0;
+#endif
     }
     jsiClearInputLine(true);
   }

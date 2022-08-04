@@ -1,4 +1,32 @@
-            Bangle.js2: Fix issue with E.showMenu creating a global `s` variable
+            Fix issue where `E.toJS("\0"+"0") == '"\00"'` which is just `"\0"`
+            Fix issue accessing `arguments` after/inside 'let/const' keyword (fix #2224)
+            let/const now don't add a scope if executed in a function outside a block (fix #2225)
+            When executing a function, ensure the scope doesn't include a `return` var
+            Rename internal return var to fit it inside one JsVar on embedded systems
+            nRF52: Added support for 2 concurrent Bluetooth Central connections to Puck.js, Pixl.js, MDBT42Q (fix #1360)
+            Bangle.js2: JIT now built in (only enabled for functions prefixed '"jit"')
+            E.dumpVariables now outputs more info for variable values
+            Puck.js Lite support
+            Puck.js: Immediately after flashing new firmware, Puck.js now does a self-test and sets its BLE to PASS or FAIL
+            nRF52: Fix recent regression which stopped reconnection after a bluetooth disconnect (fix #2226)
+            Bangle.js: Include the 'sched' library in installed apps (needed for alarm) (fix #2229)
+            Bangle.js2: Fix text size on buttons when they are tapped in E.showPrompt
+            nRF5x: Add 'onWriteDesc' in NRF.setServices - allowing you to know when something subscribed for notifications
+            nRF5x: Move advertising_start and restart_softdevice outside of IRQs (MEMORY_BUSY warnings less likely now)
+            Bangle.js: Ensure E.showMessage background color comes from theme
+            Bangle.js: Add "filename table" support to Bangle.js - avoids slow file read/list when there are many deleted/updated files in Storage (fix #2152)
+            Storage: Don't align files <512 bytes to page boundaries - all files now stored in order (ref #2232)
+            nRF5x: Call sd_ble_gattc_hv_confirm in response to BLE indications
+            Bangle.js2: Make Bangle.setBarometerPower retry twice if it has an I2C error
+            Bangle.js2: Fix `NRF.setAdvertising({},{scannable:false})`
+            Bangle.js2: Initial long range functionality (via `phy:"coded"` in `NRF.setAdvertising/setScan/requestDevice/findDevices`)
+            nRF52: Change from hard -> softfp calling convention (saves a few bytes, more compatible with compiled code)
+            Fix 'console.log([1,2,3].splice(0, 1.0))' (fix #2245)
+            Bangle.js2: Added `Bangle.setLCDOverlay(img,x,y)` to allow an image to be overlaid on top of screen contents (eg for notifications)
+            Fix issue parsing constant decls when not executing (fix #2255)
+            Puck.js: Fix Puck.mag() in newest batch of Puck.js 2.1a sometimes returning -32768
+
+     2v14 : Bangle.js2: Fix issue with E.showMenu creating a global `s` variable
             Bangle.js2: Recheck string wrapping after font change inside E.showMenu
             Bangle.js2: Double input buffer size from 1kb to 2kb
             Bangle.js2: Fix E.showMenu title changing color after scroll down+up *if* a non-standard theme was used
@@ -16,6 +44,33 @@
             Graphics: Fix drawString with combination of g.setClipRect and g.setRotation
             nRF5x: Allow 'high speed' watches via 'hispeed' argument to setWatch. Higher power consumption but detects fast (<25us) pulses.
             Bangle.js2: E.showMenu now returns 'scroller', `format` is called with a second argument, font in popup is scaled to fit (fix #2190)
+            Fix recent class method regression (24247e4ec9) (fix #2197)
+            Bangle.js2: 6x15 font tweaks for better ISO8859-1 support
+            Bangle.js: Add clock property to "custom" mode in setUI
+            Allow method declarations in objects - ES6 'Enhanced Object Literals' (#2202 / #1302)
+            Added Object.values/Object.entries (#1302)
+            Added block scoping for let and const (#971)
+            Honour non-writable const vars (fix #971)
+            Remove Line Numbers from 'save on flash' builds
+            Added Object shorthand, eg. x={a}
+            Added numeric separator support eg. 12_34
+            Add Nullish coalescing operator
+            Enable releases and cutting edge builds for Puck.js minimal releases (with 98kB of free Storage)
+            nRF5x: Fix memory leak (of address) when using NRF.setScan/requestDevice/findDevice (regression in 2v13)
+            Fix issue with const in a module when called from a scope with const already in (fix #2215, fix #2207)
+            Add `seaLevelPressure` to Bangle.setOptions (fix #2213)
+            Bangle.js: speed up HRM average adjustment (specifically when sample rate is 25Hz, eg. for Bangle.js 2)
+            Bangle.js: Change default distance units to m,km (from m,miles) (fix #2209, fix #2210)
+            Bangle.js: Rename default locale to 'system' (from 'en_GB')
+            Ctrl-C will now *not* break out of short-running intervals/watches, only long-running ones
+            Bangle.js: Allow E.showMenu to be given an array and title option (fix #2175)
+            nRF5x: We now clear the console's input line when connecting or disconnecting Bluetooth (fix #2219)
+            Graphics: Add g.blendColor to expose the ability to figure out what color is between two others (fix #2150)
+            Fix stack overflow if deallocating a massive linked list (fix #2136)
+            String substr/substring/slice now work on native/flash strings by changing pointers rather than doing an actual copy (fix #2066)
+            Fix over-iteration if breaking out of the very first iteration of FOR loop (fix #2012)
+            JSON.stringify(pin) now returns valid JSON (Pin name as a string). E.toJS still leaves it as an ID (fix #271)
+            Bangle.js2: Fix exception when using 'back' and physical button with Bangle.setUI
             
      2v13 : Memory usage improvement: Function scopes no longer stored as an array if they only contain one scope
             Memory usage improvement: The root scope is never stored in the scope list (it's searched by default)

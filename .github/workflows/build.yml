@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [ master ]
 
+permissions:
+  contents: read
+
 jobs:
 
   # normal builds
@@ -18,7 +21,7 @@ jobs:
       # try and build for all devices even if one fails
       fail-fast: false 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
       with:
         fetch-depth: 0
     - name: make ${{ matrix.board }}
@@ -38,11 +41,11 @@ jobs:
     strategy:
       # devices to build for
       matrix:
-        board: [PUCKJS, PIXLJS, MDBT42Q, BANGLEJS, BANGLEJS2]
+        board: [PUCKJS, PIXLJS, MDBT42Q, BANGLEJS, BANGLEJS2, PUCKJS_MINIMAL]
       # try and build for all devices even if one fails
       fail-fast: false 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
       with:
         fetch-depth: 0    
     - name: make ${{ matrix.board }}
@@ -67,7 +70,7 @@ jobs:
       # try and build for all devices even if one fails
       fail-fast: false 
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
       with:
         fetch-depth: 0
     - name: make ${{ matrix.board }}

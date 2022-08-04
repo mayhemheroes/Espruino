@@ -39,7 +39,7 @@ typedef enum {
     JSV_ARRAY,           ///< A JavaScript Array Buffer - Implemented just like a String at the moment
     JSV_ARRAYBUFFER,     ///< An arraybuffer (see varData.arraybuffer)
     JSV_OBJECT,
-#ifndef SAVE_ON_FLASH
+#ifndef ESPR_NO_GET_SET
     JSV_GET_SET,         ///< Getter/setter (an object with get/set fields)
 #endif
     JSV_FUNCTION,
@@ -83,18 +83,20 @@ typedef enum {
     // _JSV_VAR_END is:
     //     39 on systems with 8 bit JsVarRefs
     //     43 on systems with 16 bit JsVarRefs
-    //     51 on systems with 32 bit JsVarRefs (more if on a 64 bit platform though)
+    //     51 on systems with 32 bit JsVarRefs
+    //     81 on a 64 bit platform
 
     JSV_VARTYPEMASK = NEXT_POWER_2(_JSV_VAR_END)-1, // probably this is 63
 
-    JSV_NATIVE      = JSV_VARTYPEMASK+1, ///< to specify if this is a function parameter
+    JSV_CONSTANT    = JSV_VARTYPEMASK+1, ///< to specify if this variable is a constant or not. Only used for NAMEs
+    JSV_NATIVE      = JSV_CONSTANT<<1, ///< to specify if this is a function parameter
     JSV_GARBAGE_COLLECT = JSV_NATIVE<<1, ///< When garbage collecting, this flag is true IF we should GC!
     JSV_IS_RECURSING = JSV_GARBAGE_COLLECT<<1, ///< used to stop recursive loops in jsvTrace
     JSV_LOCK_ONE    = JSV_IS_RECURSING<<1,
     JSV_LOCK_MASK   = JSV_LOCK_MAX * JSV_LOCK_ONE,
     JSV_LOCK_SHIFT  = GET_BIT_NUMBER(JSV_LOCK_ONE), ///< The amount of bits we must shift to get the number of locks - forced to be a constant
 
-    JSV_VARIABLEINFOMASK = JSV_VARTYPEMASK | JSV_NATIVE, // if we're copying a variable, this is all the stuff we want to copy
+    JSV_VARIABLEINFOMASK = JSV_VARTYPEMASK | JSV_NATIVE | JSV_CONSTANT, // if we're copying a variable, this is all the stuff we want to copy
 } PACKED_FLAGS JsVarFlags; // aiming to get this in 2 bytes!
 
 
@@ -197,7 +199,7 @@ typedef union {
     JsVarFloat floating; ///< The contents of this variable if it is a double
     JsVarDataArrayBufferView arraybuffer; ///< information for array buffer views.
     JsVarDataNative native; ///< A native function
-    JsVarDataNativeStr nativeStr; ///< A native string
+    JsVarDataNativeStr nativeStr; ///< A native string (or flash string)
     JsVarDataRef ref; ///< References
 } PACKED_FLAGS JsVarData;
 
@@ -373,6 +375,7 @@ bool jsvIsBasicString(const JsVar *v); ///< Just a string (NOT a name)
 bool jsvIsStringExt(const JsVar *v); ///< The extra bits dumped onto the end of a string to store more data
 bool jsvIsFlatString(const JsVar *v);
 bool jsvIsNativeString(const JsVar *v);
+bool jsvIsConstant(const JsVar *v);
 bool jsvIsFlashString(const JsVar *v);
 bool jsvIsNumeric(const JsVar *v);
 bool jsvIsFunction(const JsVar *v);
@@ -385,6 +388,7 @@ bool jsvIsArrayBufferName(const JsVar *v);
 bool jsvIsNativeFunction(const JsVar *v);
 bool jsvIsUndefined(const JsVar *v);
 bool jsvIsNull(const JsVar *v);
+bool jsvIsNullish(const JsVar *v);
 bool jsvIsBasic(const JsVar *v); ///< Is this *not* an array/object/etc
 bool jsvIsName(const JsVar *v); ///< NAMEs are what's used to name a variable (it is not the data itself)
 bool jsvIsBasicName(const JsVar *v); ///< Simple NAME that links to a variable via firstChild
@@ -503,8 +507,8 @@ JsVarFloat jsvGetFloat(const JsVar *v); ///< Get the floating point representati
 bool jsvGetBool(const JsVar *v);
 long long jsvGetLongInteger(const JsVar *v);
 JsVar *jsvAsNumber(JsVar *var); ///< Convert the given variable to a number
+JsVar *jsvAsNumberAndUnLock(JsVar *v); ///< Convert the given variable to a number, unlock v after
 
-static ALWAYS_INLINE JsVar *jsvAsNumberAndUnLock(JsVar *v) { JsVar *n = jsvAsNumber(v); jsvUnLock(v); return n; }
 static ALWAYS_INLINE JsVarInt _jsvGetIntegerAndUnLock(JsVar *v) { JsVarInt i = jsvGetInteger(v); jsvUnLock(v); return i; }
 static ALWAYS_INLINE JsVarFloat _jsvGetFloatAndUnLock(JsVar *v) { JsVarFloat f = jsvGetFloat(v); jsvUnLock(v); return f; }
 static ALWAYS_INLINE bool _jsvGetBoolAndUnLock(JsVar *v) { bool b = jsvGetBool(v); jsvUnLock(v); return b; }
@@ -513,7 +517,7 @@ JsVarFloat jsvGetFloatAndUnLock(JsVar *v);
 bool jsvGetBoolAndUnLock(JsVar *v);
 long long jsvGetLongIntegerAndUnLock(JsVar *v);
 
-#ifndef SAVE_ON_FLASH
+#ifndef ESPR_NO_GET_SET
 // Executes the given getter, or if there are problems returns undefined
 JsVar *jsvExecuteGetter(JsVar *parent, JsVar *getset);
 // Executes the given setter
@@ -728,10 +732,8 @@ bool jsvIsInstanceOf(JsVar *var, const char *constructorName);
 /// Create a new typed array of the given type and length
 JsVar *jsvNewTypedArray(JsVarDataArrayBufferViewType type, JsVarInt length);
 
-#ifndef NO_DATAVIEW
 /// Create a new DataView of the given length (in elements), and fill it with the given data (if set)
 JsVar *jsvNewDataViewWithData(JsVarInt length, unsigned char *data);
-#endif
 
 /** Create a new arraybuffer of the given type and length, also return a pointer
  * to the contiguous memory area containing it. Returns 0 if it was unable to

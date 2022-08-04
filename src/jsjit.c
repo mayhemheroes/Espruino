@@ -19,6 +19,7 @@
 #include "jsinteractive.h"
 
 #define JSP_ASSERT_MATCH(TOKEN) { assert(lex->tk==(TOKEN));jslGetNextToken(); } // Match where if we have the wrong token, it's an internal error
+#define JSP_MATCH_WITH_RETURN(TOKEN, RETURN_VAL) if (!jslMatch((TOKEN))) return RETURN_VAL;
 #define JSP_MATCH(TOKEN) if (!jslMatch((TOKEN))) return; // Match where the user could have given us the wrong token
 #define JSJ_PARSING (!(execInfo.execute&EXEC_EXCEPTION))
 
@@ -142,12 +143,118 @@ void jsjFactor() {
   } else JSP_MATCH(LEX_EOF);
 }
 
+/// Look up 'parent.a[index]'. Utility function called from JIT code
+uint64_t _jsjxObjectLookup(JsVar *index, JsVar *parent, JsVar *a) {
+  JsVar *resultParent = jsvSkipNameWithParent(a,true,parent);
+  jsvUnLock2(a, parent);
+  JsVar *resultA = 0;
+  if (resultParent)
+    resultA = jspGetVarNamedField(resultParent, index, true);
+  if (!resultA) {
+    if (jsvHasChildren(resultParent)) {
+      // if no child found, create a pointer to where it could be
+      // as we don't want to allocate it until it's written
+      resultA = jsvCreateNewChild(resultParent, index, 0);
+    } else {
+      jsExceptionHere(JSET_ERROR, "Field or method %q does not already exist, and can't create it on %t", index, resultParent);
+    }
+  }
+  jsvUnLock(index);
+  return ((uint64_t)(size_t)resultA) | (((uint64_t)(size_t)resultParent)<<32);
+}
+
+// Like jspeFunctionCall but we unlock ALL the vars supplied
+NO_INLINE JsVar *_jsjxFunctionCallAndUnLock(JsVar *function, JsVar *functionName, JsVar *thisArg, bool isParsing, int argCount, JsVar **argPtr) {
+  JsVar *r = jspeFunctionCall(function, functionName, thisArg, isParsing, argCount, argPtr);
+  jsvUnLockMany(argCount, argPtr);
+  jsvUnLock3(function, functionName, thisArg);
+  return r;
+}
+
+// Call jsvReplaceWithOrAddToRoot but unlock the second argument
+NO_INLINE void _jsxReplaceWithOrAddToRootUnlockSrc(JsVar *dst, JsVar *src) {
+  jsvReplaceWithOrAddToRoot(dst, src);
+  jsvUnLock(src);
+}
+
+// Handle postfix inc and dec nicely - without us having to add a bunch of extra code
+NO_INLINE JsVar *_jsxPostfixIncDec(JsVar *var, char op) {
+  // FIXME: duplicate code in __jspePostfixExpression
+  JsVar *one = jsvNewFromInteger(1);
+  JsVar *oldValue = jsvAsNumberAndUnLock(jsvSkipName(var)); // keep the old value (but convert to number)
+  JsVar *res = jsvMathsOpSkipNames(oldValue, one, op);
+  jsvReplaceWith(var, res);
+  jsvUnLock3(var,res,one);
+  return oldValue; // return the number from before we incremented
+}
+
+// Handle prefix inc and dec nicely - without us having to add a bunch of extra code
+NO_INLINE JsVar *_jsxPrefixIncDec(JsVar *var, char op) {
+  // FIXME: duplicate code in jspePostfixExpression
+  JsVar *one = jsvNewFromInteger(1);
+  JsVar *res = jsvMathsOpSkipNames(var, one, op);
+  jsvReplaceWith(var, res);
+  jsvUnLock2(res, one);
+  return var; // return the number from before we incremented
+}
+
+NO_INLINE JsVar *_jsxMathsOpSkipNamesAndUnLock(JsVar *a, JsVar *b, int op) {
+  JsVar *r = jsvMathsOpSkipNames(a,b,op);
+  jsvUnLock2(a,b);
+  return r;
+}
+
+// Parse ./[] - return true if the parent of the current item is currently on the stack
+bool jsjFactorMember() {
+  bool parentOnStack = false;
+  while ((lex->tk=='.' || lex->tk=='[') && JSJ_PARSING) {
+    if (lex->tk == '.') { // ------------------------------------- Record Access
+      JSP_ASSERT_MATCH('.');
+      if (jslIsIDOrReservedWord()) {
+        JsVar *a = jslGetTokenValueAsVar();
+        jsjcLiteralString(0, a, true); // null terminated
+        jsvUnLock(a);
+        // r0 = string pointer
+        jslGetNextToken(); // skip over current token (we checked above that it was an ID or reserved word)
+        jsjcCall(jsvNewFromString);
+        // r0 = index (as JsVar)
+      } else {
+        // incorrect token - force a match fail by asking for an ID
+        JSP_MATCH_WITH_RETURN(LEX_ID, false); // if we fail we're stopping compilation anyway
+      }
+    } else if (lex->tk == '[') { // ------------------------------------- Array Access
+      JSP_ASSERT_MATCH('[');
+      jsjAssignmentExpression();
+      jsjcPop(0);
+      jsjcCall(jsvAsArrayIndexAndUnLock);
+      JSP_MATCH_WITH_RETURN(']', false); // if we fail we're stopping compilation anyway
+      // r0 = index
+    } else {
+      assert(0);
+    }
+    // r0 currently = index
+    if (parentOnStack) jsjcPop(1); // r1 = parent
+    else jsjcLiteral32(1, 0);
+    jsjcPop(2); // r2 = the variable itself
+    jsjcCall(_jsjxObjectLookup); // (a,parent) = _jsjxObjectLookup(index, parent, a)
+    jsjcPush(0, JSJVT_JSVAR); // a
+    jsjcPush(1, JSJVT_JSVAR); // parent
+    parentOnStack = true;
+  }
+  return parentOnStack;
+}
+
 void jsjFactorFunctionCall() {
   jsjFactor();
-  // jsjFactorMember(); // FIXME we need to call this and also somehow remember 'parent'
+  bool parentOnStack = jsjFactorMember(); // FIXME we need to call this and also somehow remember 'parent'
   // FIXME: what about 'new'?
 
   while (lex->tk=='(' /*|| (isConstructor && JSP_SHOULD_EXECUTE))*/ && JSJ_PARSING) {
+    if (parentOnStack) {
+      DEBUG_JIT("; FUNCTION CALL r6 = 'this'\n");
+      jsjcPop(6); // r6 = this/parent
+      parentOnStack = false;
+    }
     DEBUG_JIT("; FUNCTION CALL r4 = funcName\n");
     jsjcPop(4); // r4 = funcName
     DEBUG_JIT("; FUNCTION CALL arguments\n");
@@ -171,18 +278,18 @@ void jsjFactorFunctionCall() {
     }
     JSP_MATCH(')');
     // r4=funcName, args on the stack
-    jsjcMov(3, JSJAR_SP); // r3 = argPtr
-    jsjcPush(3, JSJVT_INT); // argPtr
+    jsjcMov(7, JSJAR_SP); // r7 = argPtr
+    jsjcPush(7, JSJVT_INT); // argPtr (6th arg - on stack)
     // Args are in the wrong order - we have to swap them around if we have >1!
     if (argCount>1) {
       DEBUG_JIT("; FUNCTION CALL reverse arguments\n");
       for (int i=0;i<argCount/2;i++) {
         int a1 = i*4;
         int a2 = (argCount-(i+1))*4;
-        jsjcLoadImm(0, 3, a1);
-        jsjcLoadImm(1, 3, a2);
-        jsjcStoreImm(0, 3, a2);
-        jsjcStoreImm(1, 3, a1);
+        jsjcLoadImm(0, 7, a1); // r0 = memory[argPtr+a1]
+        jsjcLoadImm(1, 7, a2); // ...
+        jsjcStoreImm(0, 7, a2);
+        jsjcStoreImm(1, 7, a1);
       }
     }
     DEBUG_JIT("; FUNCTION CALL jspeFunctionCall\n");
@@ -190,24 +297,22 @@ void jsjFactorFunctionCall() {
     jsjcMov(0, 4); jsjcCall(jsvSkipName); // r0 = func
     jsjcMov(5, 0); // r5 = func
     // for constructors we'd have to do something special here
-    // Second arg
-    jsjcMov(1, 4); // r1 = funcName
-    //
-    jsjcLiteral32(2, argCount);    
-    jsjcPush(2, JSJVT_INT); // argCount
-    jsjcLiteral32(2, 0); // parent = 0 FIXME (see above)
+    jsjcMov(1, 4); // Second arg, r1 = funcName
+    jsjcLiteral32(2, argCount); //
+    jsjcPush(2, JSJVT_INT); // argCount (5th arg - on stack)
+    jsjcMov(2, 6); // parent (from r6)
     jsjcLiteral32(3, 0); // isParsing = false
-    jsjcCall(jspeFunctionCall); // a = jspeFunctionCall(func, funcName, thisArg/parent, isParsing, argCount, argPtr);
-    DEBUG_JIT("; FUNCTION CALL cleanup\n");
+    jsjcCall(_jsjxFunctionCallAndUnLock); // a = jspeFunctionCall(func, funcName, thisArg/parent, isParsing, argCount, argPtr);
+    DEBUG_JIT("; FUNCTION CALL cleanup stack\n");
     jsjcAddSP(4*(2+argCount)); // pop off argCount,argPtr + all the arguments
     jsjcPush(0, JSJVT_JSVAR); // push return value from jspeFunctionCall
-    jsjcMov(1, 4); // funcName
-    jsjcMov(0, 5); // func
-    jsjcCall(jsvUnLock2); // unlock
     DEBUG_JIT("; FUNCTION CALL end\n");
     // FIXME - also unlock/clear 'parent'
     // parent=0;
     // a = jsjFactorMember(a, &parent);
+  }
+  if (parentOnStack) {
+    jsjcPop(4); // just remove parent from the stack. We don't care where it goes!
   }
 }
 
@@ -215,67 +320,23 @@ void __jsjPostfixExpression() {
   while (lex->tk==LEX_PLUSPLUS || lex->tk==LEX_MINUSMINUS) {
     int op = lex->tk; // POSFIX expression =>  i++, i--
     JSP_ASSERT_MATCH(op);
-    // Get the old value
-    jsjPopAsVar(0); // value -> r0
-    jsjcMov(4, 0); // r0 -> r4 (save for later)
-    jsjcCall(jsvSkipName);
-    jsjcCall(jsvAsNumberAndUnLock); // convert old value to number
+    jsjPopAsVar(0); // old value -> r0
+    jsjcLiteral32(1, op==LEX_PLUSPLUS ? '+' : '-'); // add the operation
+    jsjcCall(_jsxPostfixIncDec); // JsVar *_jsxPostfixIncDec(JsVar *var, char op)
     jsjcPush(0, JSJVT_JSVAR); // push result (value BEFORE we inc/dec)
-    // Create number 1
-    jsjcLiteral32(0, (uint32_t)1);
-    jsjcCall(jsvNewFromInteger);
-    jsjcMov(5, 0); // r0(one) -> r5 ready for UnLock
-    jsjcMov(1, 0); // r0(one) -> r1 ready for MathsOp
-    jsjcMov(0, 4); // r4(value) -> r0 ready for MathsOp
-    jsjcLiteral32(2, op==LEX_PLUSPLUS ? '+' : '-');
-    jsjcCall(jsvMathsOpSkipNames);
-    // r0 = result
-    jsjcMov(1, 0); // 2nd arg = result
-    jsjcMov(6, 0); // r6 = result - for unlock later
-    jsjcMov(0, 4); // 1st arg = value
-    jsjcCall(jsvReplaceWith);
-    // now unlock
-    jsjcMov(0, 6); // result
-    jsjcMov(1, 5); // one
-    jsjcMov(2, 4); // value
-    jsjcCall(jsvUnLock3);
   }
 }
 
 void jsjPostfixExpression() {
   if (lex->tk==LEX_PLUSPLUS || lex->tk==LEX_MINUSMINUS) {
-    /*// PREFIX expression =>  ++i, --i
+    // PREFIX expression =>  ++i, --i
     int op = lex->tk;
     JSP_ASSERT_MATCH(op);
-
-    a = jsjPostfixExpression();
-    if (JSP_SHOULD_EXECUTE) {
-      JsVar *one = jsvNewFromInteger(1);
-      JsVar *res = jsvMathsOpSkipNames(a, one, op==LEX_PLUSPLUS ? '+' : '-');
-      jsvUnLock(one);
-      // in-place add/subtract
-      jsvReplaceWith(a, res);
-      jsvUnLock(res);
-    }
-     *//*
-    jsjPostfixExpression();
-    jsjcLiteral32(0, 1);
-    jsjcCall(jsvNewFromInteger);
-    jsjcMov(1, 0);
-    jsjcMov(4, 0); // preserve 'one' for call
-    jsjcPop(1);
-    jsjcMov(5, 0); // preserve 'a' for call
-    jsjcLiteral32(3, op==LEX_PLUSPLUS ? '+' : '-');
-    jsjcCall(jsvMathsOpSkipNames);
-    jsjcMov(0, 4); // one -> r0
-    jsjcCall(jsvUnLock); // jsvUnLock(one)
-    jsjcMov(1, 0); // res -> r1
-    jsjcMov(4, 0); // res -> r0
-    jsjcMov(0, 5); // a -> r0
-    jsjcCall(jsvReplaceWith);
-    jsjcMov(0, 4); // res -> r0
-    jsjcCall(jsvUnLock); // jsvUnLock(res)
-    */
+    jsjPostfixExpression(); // recurse to get our var...
+    jsjPopAsVar(0); // old value -> r0
+    jsjcLiteral32(1, op==LEX_PLUSPLUS ? '+' : '-'); // add the operation
+    jsjcCall(_jsxPrefixIncDec); // JsVar *_jsxPrefixIncDec(JsVar *var, char op)
+    jsjcPush(0, JSJVT_JSVAR); // push result (value AFTER we inc/dec)
   } else
     jsjFactorFunctionCall();
    __jsjPostfixExpression();
@@ -283,21 +344,26 @@ void jsjPostfixExpression() {
 
 void jsjUnaryExpression() {
   if (lex->tk=='!' || lex->tk=='~' || lex->tk=='-' || lex->tk=='+') {
-/*    short tk = lex->tk;
-    JSP_ASSERT_MATCH(tk);
-    if (tk=='!') { // logical not
-      return jsvNewFromBool(!jsvGetBoolAndUnLock(jsvSkipNameAndUnLock(jsjUnaryExpression())));
-    } else if (tk=='~') { // bitwise not
-      return jsvNewFromInteger(~jsvGetIntegerAndUnLock(jsvSkipNameAndUnLock(jsjUnaryExpression())));
-    } else if (tk=='-') { // unary minus
-      return jsvNegateAndUnLock(jsjUnaryExpression()); // names already skipped
-    }  else if (tk=='+') { // unary plus (convert to number)
-      JsVar *v = jsvSkipNameAndUnLock(jsjUnaryExpression());
-      JsVar *r = jsvAsNumber(v); // names already skipped
-      jsvUnLock(v);
-      return r;
-    }*/
-    assert(0);
+    int op = lex->tk;
+    JSP_ASSERT_MATCH(op);
+    jsjUnaryExpression();
+    jsjPopNoName(0); // value -> r0 (but ensure it's not a name)
+    if (op=='!') { // logical not
+      jsjcCall(jsvGetBoolAndUnLock);
+      jsjcMVN(0,0); // ~
+      jsjcLiteral32(1, 1);
+      jsjcAND(0,1); // &1   -> convert it back to a boolean
+      jsjcCall(jsvNewFromBool);
+    } else if (op=='~') { // bitwise not
+      jsjcCall(jsvGetIntegerAndUnLock);
+      jsjcMVN(0,0); // ~
+      jsjcCall(jsvNewFromInteger);
+    } else if (op=='-') { // unary minus
+      jsjcCall(jsvNegateAndUnLock);
+    } else if (op=='+') { // unary plus (convert to number)
+      jsjcCall(jsvAsNumberAndUnLock);
+    } else assert(0);
+    jsjcPush(0, JSJVT_JSVAR);
   } else
     jsjPostfixExpression();
 }
@@ -398,15 +464,10 @@ void __jsjBinaryExpression(unsigned int lastPrecedence) {
         jsvUnLock2(av, bv);
       } else */{  // --------------------------------------------- NORMAL
         jsjPopAsVar(1); // b -> r1
-        jsjcMov(5, 0); // b -> r5 (for unlock later)
         jsjPopAsVar(0); // a -> r0
-        jsjcMov(4, 0); // a -> r4 (for unlock later)
         jsjcLiteral32(2, op);
-        jsjcCall(jsvMathsOpSkipNames);
+        jsjcCall(_jsxMathsOpSkipNamesAndUnLock); // unlocks arguments
         jsjcPush(0, JSJVT_JSVAR); // push result
-        jsjcMov(1, 5); // b -> r1
-        jsjcMov(0, 4); // a -> r0
-        jsjcCall(jsvUnLock2);
       }
     }
     precedence = jsjGetBinaryExpressionPrecedence(lex->tk);
@@ -443,11 +504,10 @@ NO_INLINE void jsjAssignmentExpression() {
 
 
     if (op=='=') {
-      jsjcCall(jsvReplaceWithOrAddToRoot);
-      // FIXME - the unlock causes a crash, but it looks like we are leaking locks... Maybe AssignmentExpression doesn't always lock?
-      //jsjPopAndUnLock(); // Unlock RHS, that we pushed earlier
+      // this is like jsvReplaceWithOrAddToRoot but it unlocks the RHS for us
+      jsjcCall(_jsxReplaceWithOrAddToRootUnlockSrc); // void _jsxReplaceWithOrAddToRootUnlockSrc(JsVar *dst, JsVar *src)
     } else {
-#if 0
+/*
       if (op==LEX_PLUSEQUAL) op='+';
       else if (op==LEX_MINUSEQUAL) op='-';
       else if (op==LEX_MULEQUAL) op='*';
@@ -462,9 +522,9 @@ NO_INLINE void jsjAssignmentExpression() {
       if (op=='+' && jsvIsName(lhs)) {
         JsVar *currentValue = jsvSkipName(lhs);
         if (jsvIsBasicString(currentValue) && jsvGetRefs(currentValue)==1 && rhs!=currentValue) {
-          /* A special case for string += where this is the only use of the string
-           * and we're not appending to ourselves. In this case we can do a
-           * simple append (rather than clone + append)*/
+          // A special case for string += where this is the only use of the string
+          // and we're not appending to ourselves. In this case we can do a
+          // simple append (rather than clone + append)
           JsVar *str = jsvAsString(rhs);
           jsvAppendStringVarComplete(currentValue, str);
           jsvUnLock(str);
@@ -473,12 +533,12 @@ NO_INLINE void jsjAssignmentExpression() {
         jsvUnLock(currentValue);
       }
       if (op) {
-        /* Fallback which does a proper add */
+        // Fallback which does a proper add
         JsVar *res = jsvMathsOpSkipNames(lhs,rhs,op);
         jsvReplaceWith(lhs, res);
         jsvUnLock(res);
       }
-#endif
+*/
     }
   }
 }
@@ -565,6 +625,7 @@ void jsjStatementFor() {
     // We add a jump to the end after we've parsed everything and know the size
   }
   JSP_MATCH(';');
+  DEBUG_JIT("; FOR Iterator block\n");
   JsVar *oldBlock = jsjcStartBlock();
   if (lex->tk != ')')  { // we could have 'for (;;)'
     jsjExpression(); // iterator
@@ -675,7 +736,7 @@ JsVar *jsjParseFunction() {
   // with native function code...
   jsjcPushAll(); // Function start
   jsjBlockNoBrackets();
-  // optimisation: if the last statement was a return, no need for this
+  // optimisation: if the last statement was a return, no need for this. Could check if last instruction was 'POP {r4,r5,r6,r7,pc}'
   // Return 'undefined' from function if no other return statement
   jsjcLiteral32(0, 0);
   jsjcPopAllAndReturn();

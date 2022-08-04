@@ -37,18 +37,23 @@ hello("Test")  // 1 ["Test"]
 hello(1,2,3)   // 3 [1,2,3]
 ```
 
-**Note:** Due to the way Espruino works this is doesn't behave exactly
-the same as in normal JavaScript. The length of the arguments array
-will never be less than the number of arguments specified in the 
-function declaration: `(function(a){ return arguments.length; })() == 1`.
-Normal JavaScript interpreters would return `0` in the above case.
+**Note:** Due to the way Espruino works this is doesn't behave exactly the same
+as in normal JavaScript. The length of the arguments array will never be less
+than the number of arguments specified in the function declaration:
+`(function(a){ return arguments.length; })() == 1`. Normal JavaScript
+interpreters would return `0` in the above case.
 
  */
 extern JsExecInfo execInfo;
 JsVar *jswrap_arguments() {
   JsVar *scope = 0;
-  if (execInfo.scopesVar)
+#ifdef ESPR_NO_LET_SCOPING
+  if (execInfo.scopesVar) // if no let scoping, the top of the scopes list is the function
     scope = jsvGetLastArrayItem(execInfo.scopesVar);
+#else
+  if (execInfo.baseScope) // if let scoping, the top of the scopes list may just be a scope. Use baseScope instead
+    scope = jsvLockAgain(execInfo.baseScope);
+#endif
   if (!jsvIsFunction(scope)) {
     jsExceptionHere(JSET_ERROR, "Can only use 'arguments' variable inside a function");
     return 0;
@@ -212,7 +217,8 @@ JsVarFloat jswrap_parseFloat(JsVar *v) {
   ],
   "return" : ["bool","True is the value is a Finite number, false if not."]
 }
-Is the parameter a finite num,ber or not? If needed, the parameter is first converted to a number.
+Is the parameter a finite number or not? If needed, the parameter is first
+converted to a number.
  */
 bool jswrap_isFinite(JsVar *v) {
   JsVarFloat f = jsvGetFloat(v);
@@ -396,7 +402,8 @@ JsVar *jswrap_atob(JsVar *base64Data) {
   ],
   "return" : ["JsVar","A string containing the encoded data"]
 }
-Convert a string with any character not alphanumeric or `- _ . ! ~ * ' ( )` converted to the form `%XY` where `XY` is its hexadecimal representation
+Convert a string with any character not alphanumeric or `- _ . ! ~ * ' ( )`
+converted to the form `%XY` where `XY` is its hexadecimal representation
  */
 JsVar *jswrap_encodeURIComponent(JsVar *arg) {
   JsVar *v = jsvAsString(arg);
@@ -444,7 +451,8 @@ JsVar *jswrap_encodeURIComponent(JsVar *arg) {
   ],
   "return" : ["JsVar","A string containing the decoded data"]
 }
-Convert any groups of characters of the form '%ZZ', into characters with hex code '0xZZ'
+Convert any groups of characters of the form '%ZZ', into characters with hex
+code '0xZZ'
  */
 JsVar *jswrap_decodeURIComponent(JsVar *arg) {
   JsVar *v = jsvAsString(arg);
